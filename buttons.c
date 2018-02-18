@@ -21,45 +21,152 @@
 
 
 int main(int argc, char *argv[]) {
-  char *gpios[MAX_BUTTONS];
   int l, gpioCount;
-  pollerThreadArgs ptArgs;
+  buttonDefinition * buttons[MAX_BUTTONS];
   pthread_t buttonThread;
   pthread_t socketThread;
   int clients[MAX_CLIENTS];
 
-  gpios[0] = "17"; // TODO these need to come from command line args
-  gpios[1] = "27";
-  gpioCount = 2;
-  ptArgs.gpios = gpios;
-  ptArgs.gpioCount = gpioCount;
-  ptArgs.clients = clients;
 
+  // TODO these need to come from a config file or command line args
+  const char * gpios[] = {
+    "17",
+    "27"
+  };
+  gpioCount = 2;
+
+  // init client file descriptors
   for(l = 0; l < MAX_CLIENTS; l++) {
     clients[l] = -1;
   }
 
-  pthread_create(&socketThread, NULL, &socketServer, &clients);
-  pthread_create(&buttonThread, NULL, &buttonPoller, &ptArgs);
-  pthread_join(buttonThread, NULL); // TODO what about socket thread?
+  for(l = 0; l < gpioCount; l++) {
+    buttons[l] = (buttonDefinition *)malloc(sizeof(buttonDefinition));
+    buttons[l]->gpio = gpios[l];
+    pthread_mutex_init(&buttons[l]->lockControl, NULL);
+    pthread_barrier_init(&buttons[l]->barrierControl, NULL, 2);
+    buttons[l]->clients = clients;
+    pthread_create(&buttons[l]->parent, NULL, &buttonParent, buttons[l]);
+  }
 
-//  for(;;) { sleep(1); }
+  for(l = 0; l < gpioCount; l++) {
+    pthread_join(buttons[l]->parent, NULL);
+  }
+
 
 /*
+  pthread_create(&socketThread, NULL, &socketServer, &clients);
+*/
 
-clock_gettime(CLOCK_MONOTONIC_RAW, &eventTime);
+}
 
-event_us = eventTime.tv_sec * 1000000 + eventTime.tv_nsec / 1000;
-//    time ( &rawtime );
-//    timeinfo = localtime ( &rawtime );
-    if (event_us - last_us > 30000 && c != last_c) {
-      printf("x: %d c: %d %" PRIu64 " %" PRIu64 "\n", pollStatus, (c - 48), (event_us - last_us), event_us);
-      last_us = event_us;
-      last_c = c;
+
+void * buttonParent(void * args) {
+  buttonDefinition * button;
+  button = (buttonDefinition *)args;
+  char buff[30];
+  struct pollfd pollfdStruct;
+  int pollStatus;
+  uint8_t c;
+
+  sprintf(buff, "/sys/class/gpio/gpio%s/value", button->gpio);
+  if ((button->fd = open(buff, O_RDWR)) < 0) {
+    printf("Failed to open gpio%d.\n", button->gpio);
+    exit(1);
+  }
+
+  // configure polling structure
+  pollfdStruct.fd = button->fd;
+  pollfdStruct.events = POLLPRI | POLLERR;
+
+  // configure button structure
+  button->state = STATE_INIT;
+  button->debounceState = INACTIVE;
+
+  // clear out any waiting gpio values
+  pollStatus = poll(&pollfdStruct, 1, 10); // 10 millisecond wait for input
+  if (pollStatus > 0) {
+    if (pollfdStruct.revents & POLLPRI) {
+      lseek (pollfdStruct.fd, 0, SEEK_SET) ;	// Rewind
+      (void)read (pollfdStruct.fd, &c, 1) ;	// Read & clear
     }
   }
-  */
+
+  // reset button state
+  button->state = STATE_IDLE;
+  pthread_mutex_lock(&button->lockControl);
+  pthread_create(&button->child, NULL, &buttonChild, button);
+
+  for(;;) {
+    pollStatus = poll(&pollfdStruct, 1, -1) ;
+    if (pollStatus > 0) {
+        if (pollfdStruct.revents & POLLPRI) {
+          lseek (pollfdStruct.fd, 0, SEEK_SET) ;	// Rewind
+          (void)read (pollfdStruct.fd, &c, 1) ;	// Read & clear
+
+          button->lastValue = c;
+          // TODO consider conditional based on debounce state
+          pthread_mutex_unlock(&button->lockControl); // signal child button event has started
+          pthread_barrier_wait(&button->barrierControl); // wait on begin sychronization
+          pthread_mutex_lock(&button->lockControl); // regain lock for next event
+          pthread_barrier_wait(&button->barrierControl); // signal child synchronized
+        }
+
+    }
+    else {
+      // something wrong with poll status
+
+    }
+  }
 }
+
+
+void * buttonChild(void * args) {
+  buttonDefinition * button;
+  button = (buttonDefinition *)args;
+  int lockStatus, count = 0;
+
+  for(;;) {
+    if (button->debounceState == ACTIVE) {
+      lockStatus = pthread_mutex_timedlock(&button->lockControl, &button->conditionTime);
+    }
+    else {
+      lockStatus = pthread_mutex_lock(&button->lockControl); // wait for parent to signal button event started
+    }
+    // TODO may need other error checks
+
+    if (!lockStatus) {
+      // we have lock, perform handshake with parent
+      pthread_mutex_unlock(&button->lockControl); // release for synchronization
+      pthread_barrier_wait(&button->barrierControl); // begin synchronization
+      pthread_barrier_wait(&button->barrierControl); // wait for synchronized
+    }
+
+    clock_gettime(CLOCK_REALTIME, &button->lastTime);
+    if (button->debounceState == INACTIVE) {
+      // gpio changed, start debounce
+      button->debounceState = ACTIVE;
+      button->conditionTime.tv_sec = button->lastTime.tv_sec;
+      button->conditionTime.tv_nsec = button->lastTime.tv_nsec + DEBOUNCE_NS;
+    }
+    else if (
+      (
+        !lockStatus &&
+        ((button->lastTime.tv_sec - button->conditionTime.tv_sec) * 1000000000 +
+        (button->lastTime.tv_nsec - button->conditionTime.tv_nsec) > DEBOUNCE_NS)
+      ) || lockStatus == ETIMEDOUT) {
+      // debounce timed out or locked after debounce
+      // TODO is it even possible to lock after debounce?
+      if (button->lastValue == RELEASED) {
+        count++;
+        printf("%s %d\n", button->gpio, count);
+      }
+      button->debounceState = INACTIVE;
+    }
+  }
+}
+
+
 
 
 void * socketServer(void * args) {
@@ -85,7 +192,7 @@ printf("Connect %d\n", fd);
   }
 }
 
-
+/*
 void * buttonPoller(void * args) {
   pollerThreadArgs * ptArgs;
   ptArgs = (pollerThreadArgs *)args;
@@ -134,17 +241,8 @@ void * buttonPoller(void * args) {
   }
 
 
-/*
-
-  // TODO need a way to read in command line args for settings
-
-
-  // TODO use define for button value, "0" == 48 == PRESSED, "1" == 49 == RELEASED
-
-*/
   for(;;) {
-    // TODO count needs to be used in place of static 2
-    pollStatus = poll(polls, 2, -1) ;
+    pollStatus = poll(polls, ptArgs->gpioCount, -1) ;
     if (pollStatus > 0) {
       for(l = 0; l < ptArgs->gpioCount; l++) {
         if (polls[l].revents & POLLPRI) {
@@ -174,8 +272,8 @@ void * buttonPoller(void * args) {
   }
 
 }
-
-
+*/
+/*
 void * buttonDebounce(void * args) {
   gpioButton * button;
   button = (gpioButton *) args;
@@ -185,12 +283,13 @@ void * buttonDebounce(void * args) {
   sprintf(msg, "EMIT button_changed %d %c %d %c\n\n\n", button->index, button->value, button->value, button->lastValue);
   printf("%s", msg);
   emitMessage(EVENT_STRING[button_changed], button->clients);
+
   //writeSocket(pargs->eventFD, msg);
   // process state with emit / timeout
   // need a way to stop running emit timeout
 
 }
-
+*/
 
 void emitMessage(const char * msg, int * clients) {
   int l, wl;

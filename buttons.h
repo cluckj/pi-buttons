@@ -12,6 +12,19 @@ enum ButtonState {
   STATE_RELEASE_WAIT
 };
 
+enum DebounceState {
+  INACTIVE,
+  ACTIVE
+};
+
+enum ButtonValue {
+  PRESSED = 48,
+  RELEASED
+};
+/*
+#define PRESSED 48
+#define RELEASED 49
+*/
 
 // define events
 #define FOREACH_EVENT(EVENT) \
@@ -33,8 +46,26 @@ static const char *EVENT_STRING[] = {
 
 
 #define DEBOUNCE_MS 30
+#define DEBOUNCE_NS 30000000
 #define PRESSED_MS 200
 #define CLICKED_MS 200
+
+typedef struct {
+  pthread_mutex_t lockControl;
+  pthread_barrier_t barrierControl;
+  struct timespec lastTime;
+  struct timespec conditionTime;
+  const char * gpio;
+  int fd; // file descriptor for button input
+  enum ButtonState state;
+  int debounceState;
+  uint8_t value;
+  uint8_t lastValue;
+  int * clients;
+  pthread_t parent;
+  pthread_t child;
+  long debounce_ns;
+} buttonDefinition;
 
 typedef struct {
   char ** gpios;
@@ -57,3 +88,5 @@ void * buttonDebounce(void * args);
 void * socketServer(void * args);
 int openSocket();
 void emitMessage(const char * msg, int * clients);
+void * buttonParent(void * args);
+void * buttonChild(void * args);
