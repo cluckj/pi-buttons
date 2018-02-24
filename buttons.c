@@ -39,7 +39,9 @@ int main(int argc, char *argv[]) {
   for(l = 0; l < MAX_CLIENTS; l++) {
     clients[l] = -1;
   }
+  pthread_create(&socketThread, NULL, &socketServer, &clients);
 
+  // init buttons
   for(l = 0; l < gpioCount; l++) {
     buttons[l] = (buttonDefinition *)malloc(sizeof(buttonDefinition));
     buttons[l]->gpio = gpios[l];
@@ -49,14 +51,10 @@ int main(int argc, char *argv[]) {
     pthread_create(&buttons[l]->parent, NULL, &buttonParent, buttons[l]);
   }
 
+  // TODO can all threads be monitored simultaneously and restart if one fails?
   for(l = 0; l < gpioCount; l++) {
     pthread_join(buttons[l]->parent, NULL);
   }
-
-
-/*
-  pthread_create(&socketThread, NULL, &socketServer, &clients);
-*/
 
 }
 
@@ -82,6 +80,7 @@ void * buttonParent(void * args) {
   // configure button structure
   button->state = STATE_INIT;
   button->debounceState = INACTIVE;
+  button->value = RELEASED;
 
   // clear out any waiting gpio values
   pollStatus = poll(&pollfdStruct, 1, 10); // 10 millisecond wait for input
@@ -105,11 +104,17 @@ void * buttonParent(void * args) {
           (void)read (pollfdStruct.fd, &c, 1) ;	// Read & clear
 
           button->lastValue = c;
-          // TODO consider conditional based on debounce state
-          pthread_mutex_unlock(&button->lockControl); // signal child button event has started
-          pthread_barrier_wait(&button->barrierControl); // wait on begin sychronization
-          pthread_mutex_lock(&button->lockControl); // regain lock for next event
-          pthread_barrier_wait(&button->barrierControl); // signal child synchronized
+
+          if (button->debounceState == INACTIVE) {
+            // when not in a debounce state then signal child about button change
+            pthread_mutex_unlock(&button->lockControl); // signal child button event has started
+            pthread_barrier_wait(&button->barrierControl); // wait on begin sychronization
+            pthread_mutex_lock(&button->lockControl); // regain lock for next event
+            pthread_barrier_wait(&button->barrierControl); // signal child synchronized
+          }
+          else {
+            // TODO do we need to do anything if in debounce? probably not.
+          }
         }
 
     }
@@ -124,48 +129,139 @@ void * buttonParent(void * args) {
 void * buttonChild(void * args) {
   buttonDefinition * button;
   button = (buttonDefinition *)args;
-  int lockStatus, count = 0;
+  int lockStatus, startDebounce = 0;
+  long lockTimeout = TIMEOUT_FALSE;
+  char eventMsg[EVENT_MSG_MAX_LENGTH];
 
+  // main loop
   for(;;) {
-    if (button->debounceState == ACTIVE) {
+    // wait for next event, unlock or timeout
+    if (lockTimeout) {
       lockStatus = pthread_mutex_timedlock(&button->lockControl, &button->conditionTime);
     }
     else {
       lockStatus = pthread_mutex_lock(&button->lockControl); // wait for parent to signal button event started
     }
-    // TODO may need other error checks
 
+    lockTimeout = TIMEOUT_FALSE;
+    if (lockStatus != ETIMEDOUT && button->debounceState == INACTIVE) {
+      // not a timeout and not in debounce state, start debounce of button value
+      button->debounceState = ACTIVE;
+      button->value = button->lastValue;
+      clock_gettime(CLOCK_REALTIME, &button->lastTime);
+      setConditionNS(&button->lastTime, &button->conditionTime, DEBOUNCE_NS);
+      lockTimeout = TIMEOUT_TRUE;
+      emitFormattedMessage(eventMsg, EVENT_STRING[button_changed], button);
+    }
+    else if (lockStatus == ETIMEDOUT && button->debounceState == ACTIVE) {
+      button->debounceState = INACTIVE;
+      // timed out while in the debounce state, perform state transition
+      switch(button->state) {
+        case STATE_IDLE:
+        if (button->value == PRESSED && button->lastValue == PRESSED) {
+          // button pressed and held
+          button->state = STATE_PRESSED;
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
+          setConditionNS(&button->lastTime, &button->conditionTime, PRESSED_NS);
+          lockTimeout = TIMEOUT_TRUE;
+        }
+        else if (button->value == PRESSED) {
+          // button pressed and released within debounce
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
+          button->state = STATE_CLICKED;
+          setConditionNS(&button->lastTime, &button->conditionTime, CLICKED_NS);
+          lockTimeout = TIMEOUT_TRUE;
+        }
+        break;
+
+        case STATE_PRESSED:
+        if (button->lastValue == RELEASED) {
+          // button released
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
+          button->state = STATE_CLICKED;
+          setConditionNS(&button->lastTime, &button->conditionTime, CLICKED_NS);
+          lockTimeout = TIMEOUT_TRUE;
+        }
+        else if (button->value == RELEASED && button->lastValue == PRESSED) {
+          // button released and pressed within debounce
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
+          button->state = STATE_CLICKED_PRESSED;
+          setConditionNS(&button->lastTime, &button->conditionTime, PRESSED_NS);
+          lockTimeout = TIMEOUT_TRUE;
+        }
+        else {
+          // unknown, reset state
+          button->state = STATE_IDLE;
+        }
+        break;
+
+        case STATE_CLICKED:
+        if (button->lastValue == PRESSED) {
+          // after clicked button pressed and held
+          button->state = STATE_CLICKED_PRESSED;
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
+          setConditionNS(&button->lastTime, &button->conditionTime, PRESSED_NS);
+          lockTimeout = TIMEOUT_TRUE;
+        }
+        else if (button->value == PRESSED && button->lastValue == RELEASED) {
+          // after clicked button pressed and released within debounce
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
+          button->state = STATE_DOUBLE_CLICKED;
+          setConditionNS(&button->lastTime, &button->conditionTime, CLICKED_NS);
+          lockTimeout = TIMEOUT_TRUE;
+        }
+        else {
+          // unknown, reset state
+          button->state = STATE_IDLE;
+        }
+        break;
+
+        case STATE_CLICKED_PRESSED:
+        if (button->lastValue == RELEASED) {
+          emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
+          button->state = STATE_DOUBLE_CLICKED;
+          emitState(eventMsg, button);
+          button->state = STATE_IDLE;
+        }
+        else {
+          // unknown, reset state
+          button->state = STATE_IDLE;
+        }
+        break;
+
+        case STATE_DOUBLE_CLICKED:
+        case STATE_RELEASE_WAIT:
+        emitState(eventMsg, button);
+        button->state = STATE_IDLE;
+        break;
+      }
+    }
+    else {
+      // emit state and transition state
+      emitState(eventMsg, button);
+      switch(button->state) {
+        case STATE_PRESSED:
+        case STATE_CLICKED_PRESSED:
+        button->state = STATE_RELEASE_WAIT;
+        break;
+
+        default:
+        button->state = STATE_IDLE;
+        break;
+      }
+    }
+
+    // if child has lock then perform handshake with parent
     if (!lockStatus) {
-      // we have lock, perform handshake with parent
       pthread_mutex_unlock(&button->lockControl); // release for synchronization
       pthread_barrier_wait(&button->barrierControl); // begin synchronization
       pthread_barrier_wait(&button->barrierControl); // wait for synchronized
     }
-
-    clock_gettime(CLOCK_REALTIME, &button->lastTime);
-    if (button->debounceState == INACTIVE) {
-      // gpio changed, start debounce
-      button->debounceState = ACTIVE;
-      button->conditionTime.tv_sec = button->lastTime.tv_sec;
-      button->conditionTime.tv_nsec = button->lastTime.tv_nsec + DEBOUNCE_NS;
-    }
-    else if (
-      (
-        !lockStatus &&
-        ((button->lastTime.tv_sec - button->conditionTime.tv_sec) * 1000000000 +
-        (button->lastTime.tv_nsec - button->conditionTime.tv_nsec) > DEBOUNCE_NS)
-      ) || lockStatus == ETIMEDOUT) {
-      // debounce timed out or locked after debounce
-      // TODO is it even possible to lock after debounce?
-      if (button->lastValue == RELEASED) {
-        count++;
-        printf("%s %d\n", button->gpio, count);
-      }
-      button->debounceState = INACTIVE;
-    }
   }
 }
-
 
 
 
@@ -187,117 +283,65 @@ void * socketServer(void * args) {
         break;
       }
     }
-    // add connection to empty slot
-printf("Connect %d\n", fd);
-  }
-}
 
-/*
-void * buttonPoller(void * args) {
-  pollerThreadArgs * ptArgs;
-  ptArgs = (pollerThreadArgs *)args;
-  int l, fd, pollStatus;
-  uint8_t c;
-  char buff[30];
-  struct pollfd polls[MAX_BUTTONS];
-  gpioButton buttons[MAX_BUTTONS];
-  pthread_t debounceThread;
-
-  // open file descriptors for gpio inputs
-  for(l = 0; l < ptArgs->gpioCount; l++) {
-    // TODO validate length of gpio string
-    sprintf(buff, "/sys/class/gpio/gpio%s/value", ptArgs->gpios[l]);
-    if ((fd = open(buff, O_RDWR)) < 0) {
-      printf("Failed to open gpio%s.\n", ptArgs->gpios[l]);
-      exit(1);
-    }
-
-    // configure polling structure
-    polls[l].fd = fd;
-    polls[l].events = POLLPRI | POLLERR;
-
-    // configure button structure
-    buttons[l].index = l;
-    buttons[l].fd = fd;
-    buttons[l].state = STATE_INIT;
-    buttons[l].debouncing = 0;
-    buttons[l].clients = ptArgs->clients;
-  }
-
-  // clear out any waiting gpio values
-  pollStatus = poll(polls, ptArgs->gpioCount, 10); // 10 millisecond wait for input
-  if (pollStatus > 0) {
-    for(l = 0; l < ptArgs->gpioCount; l++) {
-      if (polls[l].revents & POLLPRI) {
-        lseek (polls[l].fd, 0, SEEK_SET) ;	// Rewind
-        (void)read (polls[l].fd, &c, 1) ;	// Read & clear
-      }
-    }
-  }
-
-  // reset button state
-  for(l = 0; l < ptArgs->gpioCount; l++) {
-    buttons[l].state = STATE_IDLE;
-  }
-
-
-  for(;;) {
-    pollStatus = poll(polls, ptArgs->gpioCount, -1) ;
-    if (pollStatus > 0) {
-      for(l = 0; l < ptArgs->gpioCount; l++) {
-        if (polls[l].revents & POLLPRI) {
-          lseek (polls[l].fd, 0, SEEK_SET) ;	// Rewind
-          (void)read (polls[l].fd, &c, 1) ;	// Read & clear
-
-          if (buttons[l].debouncing) {
-            // in debounce state, note last value
-            buttons[l].lastValue = c;
-          }
-          else {
-            // save value and start debounce
-            buttons[l].debouncing = 1;
-            buttons[l].value = c;
-            buttons[l].lastValue = c;
-            printf("Debounce\n");
-            pthread_create(&debounceThread, NULL, &buttonDebounce, &buttons[l]);
-          }
-        }
-      }
-
+    if (l == MAX_CLIENTS) {
+      send(fd, ERROR_MAX_CLIENTS, strlen(ERROR_MAX_CLIENTS), MSG_NOSIGNAL);
     }
     else {
-      // something wrong with poll status
-
+    // add connection to empty slot
+printf("Connect %d\n", fd);
     }
   }
-
 }
-*/
-/*
-void * buttonDebounce(void * args) {
-  gpioButton * button;
-  button = (gpioButton *) args;
-  char msg[1024];
-  usleep(300000);
-  button->debouncing = 0;
-  sprintf(msg, "EMIT button_changed %d %c %d %c\n\n\n", button->index, button->value, button->value, button->lastValue);
-  printf("%s", msg);
-  emitMessage(EVENT_STRING[button_changed], button->clients);
 
-  //writeSocket(pargs->eventFD, msg);
-  // process state with emit / timeout
-  // need a way to stop running emit timeout
 
+// emit event for the current button state
+void emitState(char * buffer, buttonDefinition * button) {
+  switch (button->state) {
+    case STATE_PRESSED:
+    // emit event and transition to release wait
+    emitFormattedMessage(buffer, EVENT_STRING[pressed], button);
+    break;
+
+    case STATE_CLICKED:
+    // emit event and transition to idle
+    emitFormattedMessage(buffer, EVENT_STRING[clicked], button);
+    break;
+
+    case STATE_CLICKED_PRESSED:
+    // emit event and transition to release wait
+    emitFormattedMessage(buffer, EVENT_STRING[clicked_pressed], button);
+    break;
+
+    case STATE_DOUBLE_CLICKED:
+    // emit event and transition to idle
+    emitFormattedMessage(buffer, EVENT_STRING[double_clicked], button);
+    break;
+
+    case STATE_RELEASE_WAIT:
+    // emit event and transition to idle
+    emitFormattedMessage(buffer, EVENT_STRING[released], button);
+    break;
+  }
 }
-*/
+
+
+void emitFormattedMessage(char * buffer, const char * eventString, buttonDefinition * button) {
+  if (strlen(EVENT_MSG_FORMAT) + strlen(eventString) + strlen(button->gpio) >= EVENT_MSG_MAX_LENGTH) {
+    fprintf(stderr, "Emit message too large for buffer.");
+  }
+  else {
+    sprintf(buffer, EVENT_MSG_FORMAT, eventString, button->gpio, button->lastTime.tv_sec, button->lastTime.tv_nsec);
+    emitMessage(buffer, button->clients);
+  }
+}
+
 
 void emitMessage(const char * msg, int * clients) {
   int l, wl;
   for(l = 0; l < MAX_CLIENTS; l++) {
     if (clients[l] != -1) {
-      printf("WRITE: %d\n", clients[l]);
       wl = send(clients[l], msg, strlen(msg), MSG_NOSIGNAL);
-      printf("WL: %d\n", wl);
       if (wl == -1) {
         // failure, remove client
         close(clients[l]);
@@ -333,4 +377,17 @@ int openSocket() {
   }
 
   return fd;
+}
+
+
+void setConditionNS(struct timespec * currentTime, struct timespec * targetTime, uint32_t ns) {
+  targetTime->tv_sec = currentTime->tv_sec;
+  targetTime->tv_nsec = currentTime->tv_nsec;
+  if (1000000000 - targetTime->tv_nsec < ns) {
+    targetTime->tv_sec += 1;
+    targetTime->tv_nsec = ns - (targetTime->tv_nsec - 1000000000);
+  }
+  else {
+    targetTime->tv_nsec = targetTime->tv_nsec + ns;
+  }
 }
