@@ -227,8 +227,8 @@ void * buttonChild(void * args) {
           button->state = STATE_IDLE;
         }
         else {
-          // unknown, reset state
-          button->state = STATE_IDLE;
+          emitState(eventMsg, button);
+          button->state = STATE_RELEASE_WAIT;
         }
         break;
 
