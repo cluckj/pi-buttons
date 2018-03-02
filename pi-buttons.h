@@ -23,16 +23,18 @@ enum LockTimeoutState {
   TIMEOUT_TRUE
 };
 
+// ascii values for button state values
 enum ButtonValue {
   PRESSED = 48,
   RELEASED
 };
 
-// I.E. 'button_changed {"gpio": "17", "time": 012345678900123456789}'
+// define formatting for event messages, I.E. 'button_changed {"gpio": "17", "time": 012345678900123456789}'
 #define EVENT_MSG_MAX_LENGTH 128
 static const char * EVENT_MSG_FORMAT = "%s {\"gpio\": \"%s\", \"time\": {\"tv_sec\": %ld, \"tv_nsec\": %ld}}\n";
 
-// define events
+
+// macros to help define events
 #define FOREACH_EVENT(EVENT) \
         EVENT(button_changed)   \
         EVENT(button_press)  \
@@ -46,10 +48,12 @@ static const char * EVENT_MSG_FORMAT = "%s {\"gpio\": \"%s\", \"time\": {\"tv_se
 #define GENERATE_ENUM(ENUM) ENUM,
 #define GENERATE_STRING(STRING) #STRING,
 
+// enumerate event strings
 enum EVENT_ENUM {
     FOREACH_EVENT(GENERATE_ENUM)
 };
 
+// define array of event string constants
 static const char *EVENT_STRING[] = {
     FOREACH_EVENT(GENERATE_STRING)
 };
@@ -80,22 +84,8 @@ typedef struct {
   long debounce_ns;
 } buttonDefinition;
 
-typedef struct {
-  char ** gpios;
-  int gpioCount;
-  int * clients;
-} pollerThreadArgs;
 
-typedef struct {
-  int index;
-  int fd; // file descriptor for button input
-  enum ButtonState state;
-  int debouncing;
-  uint8_t value;
-  uint8_t lastValue;
-  int * clients;
-} gpioButton;
-
+int populateGpios(char * gpios[], char * list);
 void * buttonPoller(void * args);
 void * buttonDebounce(void * args);
 void * socketServer(void * args);

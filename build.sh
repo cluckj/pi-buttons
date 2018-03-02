@@ -2,4 +2,4 @@
 
 # TODO convert to Makefile
 
-gcc buttons.c -lpthread -lrt
+gcc pi-buttons.c -lpthread -lrt

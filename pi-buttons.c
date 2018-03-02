@@ -17,23 +17,31 @@
 #include <errno.h>
 #include <string.h>
 
-#include "buttons.h"
+#include "pi-buttons.h"
 
 
 int main(int argc, char *argv[]) {
-  int l, gpioCount;
+  extern char *optarg;
+  extern int optind, optopt;
+  int l, option, gpioCount = 0;
   buttonDefinition * buttons[MAX_BUTTONS];
   pthread_t buttonThread;
   pthread_t socketThread;
   int clients[MAX_CLIENTS];
+  char * gpios[MAX_BUTTONS];
 
+  while ((option = getopt (argc, argv, "g:")) != -1) {
+    switch(option) {
+      case 'g':
+      gpioCount = populateGpios(gpios, optarg);
+      break;
+    }
+  }
 
-  // TODO these need to come from a config file or command line args
-  const char * gpios[] = {
-    "17",
-    "27"
-  };
-  gpioCount = 2;
+  if (!gpioCount) {
+    fprintf(stderr, "No gpios defined.\n");
+    exit(1);
+  }
 
   // init client file descriptors
   for(l = 0; l < MAX_CLIENTS; l++) {
@@ -56,6 +64,23 @@ int main(int argc, char *argv[]) {
     pthread_join(buttons[l]->parent, NULL);
   }
 
+}
+
+
+int populateGpios(char * gpios[], char * list) {
+  int count = 0;
+  char * token;
+  token = strtok(list, ",");
+  while (token != NULL) {
+    if (count == MAX_BUTTONS) {
+      fprintf(stderr, "Exceeded maximum number of buttons possible.\n");
+      exit(1);
+    }
+    gpios[count] = token;
+    count += 1;
+    token = strtok (NULL, ",");
+  }
+  return count;
 }
 
 
