@@ -2,6 +2,7 @@
 #define MAX_BUTTONS 10
 #define MAX_CLIENTS 2
 #define ERROR_MAX_CLIENTS "error {\"error\": \"Maximum client connections exceeded.\"}"
+#define USAGE "usage: %s -g gpio[,gpio...] -s socket_path [-t pressed_ms,clicked_ms,debounce_ms]\nexample: %s -g 17,27 -s ./buttonevents -t 200,200,30\n"
 
 enum ButtonState {
   STATE_INIT,
@@ -59,13 +60,19 @@ static const char *EVENT_STRING[] = {
 };
 
 
-#define SEC_NSEC 1000000000
+//#define SEC_NSEC 1000000000
 #define DEBOUNCE_MS 30
-#define DEBOUNCE_NS 20000000
+//#define DEBOUNCE_NS 20000000
 #define PRESSED_MS 200
-#define PRESSED_NS 200000000
+//#define PRESSED_NS 200000000
 #define CLICKED_MS 200
-#define CLICKED_NS 200000000
+//#define CLICKED_NS 200000000
+
+typedef struct {
+  uint32_t nsDebounce;
+  uint32_t nsPressed;
+  uint32_t nsClicked;
+} buttonTiming;
 
 typedef struct {
   pthread_mutex_t lockControl;
@@ -81,15 +88,22 @@ typedef struct {
   int * clients;
   pthread_t parent;
   pthread_t child;
-  long debounce_ns;
+//  long debounce_ns;
+  buttonTiming * timing;
 } buttonDefinition;
 
+typedef struct {
+  char * socketPath;
+  pthread_t socketThread;
+  int clients[MAX_CLIENTS];
+} socketDefinition;
 
-int populateGpios(char * gpios[], char * list);
+void * optionToTiming(buttonTiming * timing, char * list);
+int optToGpios(char * gpios[], char * list);
 void * buttonPoller(void * args);
 void * buttonDebounce(void * args);
 void * socketServer(void * args);
-int openSocket();
+int openSocket(char * socketPath);
 void emitMessage(const char * msg, int * clients);
 void * buttonParent(void * args);
 void * buttonChild(void * args);

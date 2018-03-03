@@ -24,38 +24,73 @@ int main(int argc, char *argv[]) {
   extern char *optarg;
   extern int optind, optopt;
   int l, option, gpioCount = 0;
+  buttonTiming timing;
   buttonDefinition * buttons[MAX_BUTTONS];
-  pthread_t buttonThread;
-  pthread_t socketThread;
-  int clients[MAX_CLIENTS];
+  socketDefinition eventSocket;
   char * gpios[MAX_BUTTONS];
+  int initFail = 0;
 
-  while ((option = getopt (argc, argv, "g:")) != -1) {
+  eventSocket.socketPath = NULL;
+  timing.nsDebounce = DEBOUNCE_MS * 1000000;
+  timing.nsPressed = PRESSED_MS * 1000000;
+  timing.nsClicked = CLICKED_MS * 1000000;
+
+  // process command line arguments
+  while ((option = getopt (argc, argv, "g:s:t:")) != -1) {
     switch(option) {
-      case 'g':
-      gpioCount = populateGpios(gpios, optarg);
+      // -g accepts comma delimited list of gpio numbers
+      case 'g':// set the button gpios from the command line argument
+      gpioCount = optToGpios(gpios, optarg);
+      break;
+
+      // -s is path for the unix socket where events are emitted
+      case 's':
+      eventSocket.socketPath = optarg;
+      break;
+
+      // -t sets timing parameters
+      case 't':
+      optionToTiming(&timing, optarg);
+      break;
+
+      case '?':
+      if (optopt == 't') {
+        fprintf(stderr, "No timing parameters defined (pressed_ms, clicked_ms, deboucne_ms). I.E. -t 300,250,30\n");
+      }
+      initFail = 1;
       break;
     }
   }
 
   if (!gpioCount) {
-    fprintf(stderr, "No gpios defined.\n");
+    fprintf(stderr, "No gpios defined. I.E. -g 17,27\n");
+    initFail = 1;
+  }
+
+  if (!eventSocket.socketPath) {
+    fprintf(stderr, "No socket path defined. I.E. -s /tmp/buttonevents\n");
+    initFail = 1;
+  }
+
+  if (initFail) {
+    fprintf(stderr, USAGE, argv[0], argv[0]);
     exit(1);
   }
 
   // init client file descriptors
   for(l = 0; l < MAX_CLIENTS; l++) {
-    clients[l] = -1;
+    eventSocket.clients[l] = -1;
   }
-  pthread_create(&socketThread, NULL, &socketServer, &clients);
+  pthread_create(&eventSocket.socketThread, NULL, &socketServer, &eventSocket);
 
   // init buttons
   for(l = 0; l < gpioCount; l++) {
     buttons[l] = (buttonDefinition *)malloc(sizeof(buttonDefinition));
     buttons[l]->gpio = gpios[l];
+    buttons[l]->timing = &timing;
     pthread_mutex_init(&buttons[l]->lockControl, NULL);
     pthread_barrier_init(&buttons[l]->barrierControl, NULL, 2);
-    buttons[l]->clients = clients;
+    buttons[l]->clients = eventSocket.clients;
     pthread_create(&buttons[l]->parent, NULL, &buttonParent, buttons[l]);
   }
 
@@ -67,7 +102,8 @@ int main(int argc, char *argv[]) {
 }
 
 
-int populateGpios(char * gpios[], char * list) {
+// set the button gpios from the command line argument
+int optToGpios(char * gpios[], char * list) {
   int count = 0;
   char * token;
   token = strtok(list, ",");
@@ -83,6 +119,36 @@ int populateGpios(char * gpios[], char * list) {
   return count;
 }
 
+// set button timing from the command line argument
+void * optionToTiming(buttonTiming * timing, char * list) {
+  uint32_t t;
+  int count = 0;
+  char * token;
+  char * stopString;
+  token = strtok(list, ",");
+  while (token != NULL) {
+    t = strtoul(token, &stopString, 10) * 1000000;
+    switch(count) {
+      case 0:
+      timing->nsPressed = t;
+      break;
+
+      case 1:
+      timing->nsClicked = t;
+      break;
+
+      case 2:
+      timing->nsDebounce = t;
+      break;
+
+      default:
+      fprintf(stderr, "Exceeded maximum number of timing settings.\n");
+      exit(1);
+    }
+  }
+  return;
+}
+
 
 void * buttonParent(void * args) {
   buttonDefinition * button;
@@ -94,7 +160,7 @@ void * buttonParent(void * args) {
 
   sprintf(buff, "/sys/class/gpio/gpio%s/value", button->gpio);
   if ((button->fd = open(buff, O_RDWR)) < 0) {
-    printf("Failed to open gpio%d.\n", button->gpio);
+    fprintf(stderr, "Failed to open gpio%d.\n", button->gpio);
     exit(1);
   }
 
@@ -174,7 +240,7 @@ void * buttonChild(void * args) {
       button->debounceState = ACTIVE;
       button->value = button->lastValue;
       clock_gettime(CLOCK_REALTIME, &button->lastTime);
-      setConditionNS(&button->lastTime, &button->conditionTime, DEBOUNCE_NS);
+      setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsDebounce);
       lockTimeout = TIMEOUT_TRUE;
       emitFormattedMessage(eventMsg, EVENT_STRING[button_changed], button);
     }
@@ -187,7 +253,7 @@ void * buttonChild(void * args) {
           // button pressed and held
           button->state = STATE_PRESSED;
           emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
-          setConditionNS(&button->lastTime, &button->conditionTime, PRESSED_NS);
+          setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsPressed);
           lockTimeout = TIMEOUT_TRUE;
         }
         else if (button->value == PRESSED) {
@@ -195,7 +261,7 @@ void * buttonChild(void * args) {
           emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
           emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
           button->state = STATE_CLICKED;
-          setConditionNS(&button->lastTime, &button->conditionTime, CLICKED_NS);
+          setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsClicked);
           lockTimeout = TIMEOUT_TRUE;
         }
         break;
@@ -205,7 +271,7 @@ void * buttonChild(void * args) {
           // button released
           emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
           button->state = STATE_CLICKED;
-          setConditionNS(&button->lastTime, &button->conditionTime, CLICKED_NS);
+          setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsClicked);
           lockTimeout = TIMEOUT_TRUE;
         }
         else if (button->value == RELEASED && button->lastValue == PRESSED) {
@@ -213,7 +279,7 @@ void * buttonChild(void * args) {
           emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
           emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
           button->state = STATE_CLICKED_PRESSED;
-          setConditionNS(&button->lastTime, &button->conditionTime, PRESSED_NS);
+          setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsPressed);
           lockTimeout = TIMEOUT_TRUE;
         }
         else {
@@ -227,7 +293,7 @@ void * buttonChild(void * args) {
           // after clicked button pressed and held
           button->state = STATE_CLICKED_PRESSED;
           emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
-          setConditionNS(&button->lastTime, &button->conditionTime, PRESSED_NS);
+          setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsPressed);
           lockTimeout = TIMEOUT_TRUE;
         }
         else if (button->value == PRESSED && button->lastValue == RELEASED) {
@@ -235,7 +301,7 @@ void * buttonChild(void * args) {
           emitFormattedMessage(eventMsg, EVENT_STRING[button_press], button);
           emitFormattedMessage(eventMsg, EVENT_STRING[button_release], button);
           button->state = STATE_DOUBLE_CLICKED;
-          setConditionNS(&button->lastTime, &button->conditionTime, CLICKED_NS);
+          setConditionNS(&button->lastTime, &button->conditionTime, button->timing->nsClicked);
           lockTimeout = TIMEOUT_TRUE;
         }
         else {
@@ -291,9 +357,12 @@ void * buttonChild(void * args) {
 
 
 void * socketServer(void * args) {
-  int * clients;
-  clients = (int *)args;
-  int l, fd, socket = openSocket();
+  socketDefinition * eventSocket;
+  eventSocket = (socketDefinition *)args;
+  int l, fd, socket;
+
+  socket = openSocket(eventSocket->socketPath);
+  // TODO error checking
 
   while (1) {
     // wait for connection
@@ -303,8 +372,8 @@ void * socketServer(void * args) {
     }
 
     for(l = 0; l < MAX_CLIENTS; l++) {
-      if (clients[l] == -1) {
-        clients[l] = fd;
+      if (eventSocket->clients[l] == -1) {
+        eventSocket->clients[l] = fd;
         break;
       }
     }
@@ -313,8 +382,7 @@ void * socketServer(void * args) {
       send(fd, ERROR_MAX_CLIENTS, strlen(ERROR_MAX_CLIENTS), MSG_NOSIGNAL);
     }
     else {
-    // add connection to empty slot
-printf("Connect %d\n", fd);
+      printf("Connect %d\n", fd);
     }
   }
 }
@@ -377,7 +445,7 @@ void emitMessage(const char * msg, int * clients) {
 }
 
 
-int openSocket() {
+int openSocket(char * socketPath) {
   struct sockaddr_un addr;
   int fd;
 
@@ -388,8 +456,8 @@ int openSocket() {
 
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, EVENT_SOCKET_PATH, sizeof(addr.sun_path)-1);
-  unlink(EVENT_SOCKET_PATH);
+  strncpy(addr.sun_path, socketPath, sizeof(addr.sun_path)-1);
+  unlink(socketPath);
 
   if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
     fprintf(stderr, "Event socket bind error.");
@@ -404,7 +472,7 @@ int openSocket() {
   return fd;
 }
 
-
+// calculate the future condition time for the given number of nano seconds and current time
 void setConditionNS(struct timespec * currentTime, struct timespec * targetTime, uint32_t ns) {
   targetTime->tv_sec = currentTime->tv_sec;
   targetTime->tv_nsec = currentTime->tv_nsec;
