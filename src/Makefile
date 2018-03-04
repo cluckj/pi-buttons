@@ -35,6 +35,7 @@ uninstall:
 
 .PHONY: install_service
 install_service:
+	cp $(SCRIPTS)/pi-buttons.conf /etc/pi-buttons.conf
 	cp $(SCRIPTS)/pi-buttons.service $(SYSDDIR)/pi-buttons.service
 	cp $(SCRIPTS)/pi-buttons.sh $(BINDIR)/pi-buttons.sh
 	systemctl daemon-reload
