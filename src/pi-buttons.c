@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 
 #include <errno.h>
 #include <string.h>
@@ -145,6 +146,8 @@ void * optionToTiming(buttonTiming * timing, char * list) {
       fprintf(stderr, "Exceeded maximum number of timing settings.\n");
       exit(1);
     }
+    token = strtok(NULL, ",");
+    count += 1;
   }
   return;
 }
@@ -463,6 +466,8 @@ int openSocket(char * socketPath) {
     fprintf(stderr, "Event socket bind error.");
     exit(-1);
   }
+
+  chmod(socketPath, 0777);
 
   if (listen(fd, 5) == -1) {
     fprintf(stderr, "Event socket listen error.");

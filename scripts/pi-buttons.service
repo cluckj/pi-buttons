@@ -1,0 +1,15 @@
+[Unit]
+Description=pi-buttons event server
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/tmp
+ExecStart=/usr/bin/pi-buttons.sh
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+
+[Install]
+WantedBy=multi-user.target
