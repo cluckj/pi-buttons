@@ -1,6 +1,3 @@
-// configure INPUT
-
-// poll INPUT
 
 #include <stdio.h>
 #include <stdint.h>
