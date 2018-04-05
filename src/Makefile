@@ -3,11 +3,13 @@ CC = gcc
 CFLAGS = -I$(IDIR)
 LIBS = -lrt -lpthread
 
-DESTDIR=
-BINDIR = /usr/bin
-SCRIPTS = ../scripts
-SYSDDIR = /etc/systemd/system
+DESTDIR =
+ETCDIR = $(DESTDIR)/etc
+BINDIR = $(DESTDIR)/usr/bin
+SCRIPTS=../scripts
+SYSDDIR = $(DESTDIR)/etc/systemd/system
 
+MAKEUSERID = $(shell id -u)
 
 _DEPS = pi-buttons.h
 DEPS = $(patsubst %,$(IDIR)/%,$(_DEPS))
@@ -22,20 +24,38 @@ pi-buttons: $(OBJ)
 
 .PHONY: clean
 clean:
-	rm -f *.o *~ core $(INCDIR)/*~
+	rm -f pi-buttons *.o *~ core $(INCDIR)/*~
 
 .PHONY: install
 install: pi-buttons
-	mkdir -p $(DESTDIR)$(BINDIR)
-	cp $< $(DESTDIR)$(BINDIR)/pi-buttons
+	mkdir -p $(BINDIR)
+	cp $< $(BINDIR)/pi-buttons
 
 .PHONY: uninstall
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/pi-buttons
+	rm -f $(BINDIR)/pi-buttons
 
 .PHONY: install_service
 install_service:
-	cp $(SCRIPTS)/pi-buttons.conf /etc/pi-buttons.conf
+	mkdir -p $(ETCDIR)
+	cp $(SCRIPTS)/pi-buttons.conf $(ETCDIR)/pi-buttons.conf
+	mkdir -p $(SYSDDIR)
 	cp $(SCRIPTS)/pi-buttons.service $(SYSDDIR)/pi-buttons.service
+	mkdir -p $(BINDIR)
 	cp $(SCRIPTS)/pi-buttons.sh $(BINDIR)/pi-buttons.sh
+ifeq ($(MAKEUSERID),0)
 	systemctl daemon-reload
+endif
+
+.PHONY: uninstall_service
+uninstall_service:
+ifeq ($(MAKEUSERID),0)
+	systemctl stop pi-buttons.service
+	systemctl disable pi-buttons.service
+endif
+	mv -f $(ETCDIR)/pi-buttons.conf $(ETCDIR)/pi-buttons.saved
+	rm $(SYSDIR)/pi-buttons.service
+	rm $(BINDIR)/pi-buttons.sh
+ifeq ($(MAKEUSERID),0)
+	systemctl daemon-reload
+endif
