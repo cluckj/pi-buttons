@@ -1,3 +1,27 @@
+/*
+MIT License
+
+Copyright (c) 2018 Bryan Nielsen <bnielsen1965@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+*/
 
 #include <stdio.h>
 #include <stdint.h>
@@ -150,6 +174,7 @@ void * optionToTiming(buttonTiming * timing, char * list) {
 }
 
 
+// each button has a parent thread that watches the sysfs gpio value for changes and signals the button child thread
 void * buttonParent(void * args) {
   buttonDefinition * button;
   button = (buttonDefinition *)args;
@@ -217,6 +242,7 @@ void * buttonParent(void * args) {
 }
 
 
+// Each button has a child thread that handles the button state, timing of states, and event messaging
 void * buttonChild(void * args) {
   buttonDefinition * button;
   button = (buttonDefinition *)args;
@@ -355,7 +381,7 @@ void * buttonChild(void * args) {
 }
 
 
-
+// the socket server runs in a thread and watches for new client connections
 void * socketServer(void * args) {
   socketDefinition * eventSocket;
   eventSocket = (socketDefinition *)args;
@@ -419,6 +445,7 @@ void emitState(char * buffer, buttonDefinition * button) {
 }
 
 
+
 void emitFormattedMessage(char * buffer, const char * eventString, buttonDefinition * button) {
   if (strlen(EVENT_MSG_FORMAT) + strlen(eventString) + strlen(button->gpio) >= EVENT_MSG_MAX_LENGTH) {
     fprintf(stderr, "Emit message too large for buffer.");
@@ -445,6 +472,7 @@ void emitMessage(const char * msg, int * clients) {
 }
 
 
+// method to open a Unix socket for use in the socket server
 int openSocket(char * socketPath) {
   struct sockaddr_un addr;
   int fd;
@@ -473,6 +501,7 @@ int openSocket(char * socketPath) {
 
   return fd;
 }
+
 
 // calculate the future condition time for the given number of nano seconds and current time
 void setConditionNS(struct timespec * currentTime, struct timespec * targetTime, uint32_t ns) {
