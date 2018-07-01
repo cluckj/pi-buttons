@@ -98,7 +98,7 @@ typedef struct {
   int clients[MAX_CLIENTS];
 } socketDefinition;
 
-void * optionToTiming(buttonTiming * timing, char * list);
+void optionToTiming(buttonTiming * timing, char * list);
 int optToGpios(char * gpios[], char * list);
 void * buttonPoller(void * args);
 void * buttonDebounce(void * args);

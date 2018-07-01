@@ -142,7 +142,7 @@ int optToGpios(char * gpios[], char * list) {
 }
 
 // set button timing from the command line argument
-void * optionToTiming(buttonTiming * timing, char * list) {
+void optionToTiming(buttonTiming * timing, char * list) {
   uint32_t t;
   int count = 0;
   char * token;
