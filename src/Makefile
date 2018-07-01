@@ -54,7 +54,7 @@ ifeq ($(MAKEUSERID),0)
 	systemctl disable pi-buttons.service
 endif
 	mv -f $(ETCDIR)/pi-buttons.conf $(ETCDIR)/pi-buttons.saved
-	rm $(SYSDIR)/pi-buttons.service
+	rm $(SYSDDIR)/pi-buttons.service
 	rm $(BINDIR)/pi-buttons.sh
 ifeq ($(MAKEUSERID),0)
 	systemctl daemon-reload
